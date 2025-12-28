@@ -1,0 +1,22 @@
+Important: Respond in the same language as the user's question. If the language cannot be determined, default to English. Evaluation scores (numbers) should remain unchanged.
+
+Evaluate the following answer to the user's question according to the given criteria.
+
+User question: {{ user_question }}
+
+Answer to evaluate: {{ answer }}
+
+Evaluation criteria:
+{% for criterion in criteria %}
+{{ loop.index }}. {{ criterion }}
+{% endfor %}
+
+Requirements:
+1. Evaluate each criterion on a 10-point scale (from 1 to 10)
+2. Return the response ONLY in JSON format, without additional text
+3. Format: {"criterion_1": score, "criterion_2": score, ...}
+4. Use the exact criterion names from the list above
+5. Respond in the same language as the user's question, but evaluation scores (numbers) remain unchanged
+
+Scores:
+
