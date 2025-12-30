@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""AI Council - система оценки ответов от нескольких моделей."""
+"""AI Council - a system for evaluating responses from multiple models."""
 import sys
 import json
 import logging
@@ -8,7 +8,7 @@ import os
 from pathlib import Path
 from typing import List, Dict, Optional
 from dotenv import load_dotenv
-from jinja2 import Environment, FileSystemLoader, Template
+from jinja2 import Environment, FileSystemLoader
 from ollama import OllamaClient
 
 load_dotenv()
@@ -18,7 +18,7 @@ logging.basicConfig(
     handlers=[
         logging.StreamHandler(sys.stderr),
     ],
-    level=logging.WARNING,
+    level=logging.INFO,
     format="%(asctime)s.%(msecs)03d [%(levelname)s]: (%(name)s.%(funcName)s) - %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
 )
@@ -46,312 +46,336 @@ def get_moderator() -> Optional[str]:
 
 
 class AICouncil:
-    """Совет моделей для оценки ответов."""
-    
-    def __init__(self, models: List[str], ollama_url: str, moderator: Optional[str] = None):
+    """A council of models for evaluating responses."""
+
+    def __init__(
+        self, models: List[str], ollama_url: str, moderator: Optional[str] = None
+    ):
         self.models = models
         self.client = OllamaClient(ollama_url)
         self.moderator = moderator
-        
-        # Загрузка шаблонов Jinja2
-        template_dir = Path(__file__).parent / 'templates'
+
+        # Load Jinja2 templates
+        template_dir = Path(__file__).parent / "templates"
         env = Environment(loader=FileSystemLoader(template_dir), autoescape=False)
-        self.template_prompt = env.get_template('model_question.j2')
-        self.template_criteria = env.get_template('moderator_criteria.j2')
-        self.template_evaluation = env.get_template('model_evaluation.j2')
-        self.template_moderator = env.get_template('moderator_decision.j2')
-    
+        self.template_prompt = env.get_template("model_question.j2")
+        self.template_criteria = env.get_template("moderator_criteria.j2")
+        self.template_evaluation = env.get_template("model_evaluation.j2")
+        self.template_moderator = env.get_template("moderator_decision.j2")
+
     def send_to_all_models(self, user_question: str) -> Dict[str, str]:
-        """Отправляет запрос всем моделям и возвращает ответы."""
-        logger.info("Отправка запроса всем моделям...")
-        
-        # Формируем промпт из шаблона
-        prompt = self.template_prompt.render(
-            user_question=user_question
-        )
-        
+        """Sends a request to all models and returns the answers."""
+        logger.info("Sending request to all models...")
+
+        # Render the prompt from the template
+        prompt = self.template_prompt.render(user_question=user_question)
+
         answers = {}
-        
+
         for model in self.models:
-            logger.info(f"Запрос к модели: {model}")
+            logger.info(f"Querying model: {model}")
             answer = self.client.generate(model, prompt)
             answers[model] = answer
-            logger.info(f"Ответ от {model} получен (длина: {len(answer)} символов)")
-            # Вывод в консоль (stderr через logging)
-            print(f"\nОтвет от {model}:", file=sys.stderr)
-            print(answer, file=sys.stderr)
-        
+            logger.info(
+                f"Answer from {model} received (length: {len(answer)} characters)"
+            )
+            # Output to console (stderr via logging)
+            logger.info(f"Answer from {model}:\n{answer}")
+
         return answers
-    
+
     def select_moderator(self) -> str:
-        """Выбирает модератора совета (из конфига или случайно)."""
+        """Selects a council moderator (from config or randomly)."""
         if self.moderator is None:
             self.moderator = random.choice(self.models)
-            logger.info(f"Модератор совета выбран случайно: {self.moderator}")
+            logger.info(f"Council moderator selected randomly: {self.moderator}")
         else:
-            # Проверяем, что модератор в списке моделей
+            # Check if the moderator is in the list of models
             if self.moderator not in self.models:
-                logger.warning(f"Модератор {self.moderator} не найден в списке моделей, выбираю случайно")
+                logger.warning(
+                    f"Moderator {self.moderator} not found in the list of models, selecting randomly"
+                )
                 self.moderator = random.choice(self.models)
             else:
-                logger.info(f"Модератор совета задан из конфига: {self.moderator}")
+                logger.info(f"Council moderator set from config: {self.moderator}")
         return self.moderator
-    
+
     def get_evaluation_criteria(self, user_question: str) -> List[str]:
-        """Получает 5 критериев оценки от модератора."""
-        # Формируем промпт из шаблона
-        prompt = self.template_criteria.render(
-            user_question=user_question
+        """Gets 5 evaluation criteria from the moderator."""
+        # Render the prompt from the template
+        prompt = self.template_criteria.render(user_question=user_question)
+
+        logger.info(
+            f"Requesting evaluation criteria from moderator {self.moderator}..."
         )
-        
-        logger.info(f"Запрос критериев оценки у модератора {self.moderator}...")
         response = self.client.generate(self.moderator, prompt)
-        
-        # Парсим критерии (по одному на строку)
-        criteria = [c.strip() for c in response.strip().split('\n') if c.strip()]
-        # Берем первые 5
+
+        # Parse criteria (one per line)
+        criteria = [c.strip() for c in response.strip().split("\n") if c.strip()]
+        # Take the first 5
         criteria = criteria[:5]
-        
-        # Если критериев меньше 5, дополняем
+
+        # If there are fewer than 5 criteria, add more
         while len(criteria) < 5:
-            criteria.append(f"Критерий {len(criteria) + 1}")
-        
-        logger.info(f"Получены критерии оценки: {criteria}")
-        print(f"\nКритерии оценки от модератора {self.moderator}:", file=sys.stderr)
-        for i, criterion in enumerate(criteria, 1):
-            print(f"{i}. {criterion}", file=sys.stderr)
-        
-        return criteria
-    
-    def evaluate_answer(self, model: str, user_question: str, answer: str, criteria: List[str]) -> Dict[str, int]:
-        """Оценивает ответ по критериям одной моделью."""
-        # Формируем промпт из шаблона
-        prompt = self.template_evaluation.render(
-            user_question=user_question,
-            answer=answer,
-            criteria=criteria
+            criteria.append(f"Criterion {len(criteria) + 1}")
+
+        logger.info(f"Received evaluation criteria: {criteria}")
+        criteria_log_message = (
+            f"\nEvaluation criteria from moderator {self.moderator}:\n"
         )
-        
+        for i, criterion in enumerate(criteria, 1):
+            criteria_log_message += f"{i}. {criterion}\n"
+        logger.info(criteria_log_message)
+
+        return criteria
+
+    def evaluate_answer(
+        self, model: str, user_question: str, answer: str, criteria: List[str]
+    ) -> Dict[str, int]:
+        """Evaluates an answer based on criteria using a single model."""
+        # Render the prompt from the template
+        prompt = self.template_evaluation.render(
+            user_question=user_question, answer=answer, criteria=criteria
+        )
+
         response = self.client.generate(model, prompt)
-        
-        # Пытаемся извлечь JSON из ответа
+
+        # Try to extract JSON from the response
         scores = {}
         try:
-            # Ищем JSON в ответе
-            json_start = response.find('{')
-            json_end = response.rfind('}') + 1
+            # Find JSON in the response
+            json_start = response.find("{")
+            json_end = response.rfind("}") + 1
             if json_start >= 0 and json_end > json_start:
                 json_str = response[json_start:json_end]
                 scores = json.loads(json_str)
             else:
-                # Если JSON не найден, пытаемся парсить по-другому
-                logger.warning(f"Не удалось найти JSON в ответе от {model}, пытаемся альтернативный парсинг")
-                # Парсим по строкам вида "критерий: оценка"
-                for line in response.split('\n'):
-                    if ':' in line:
-                        parts = line.split(':', 1)
+                # If JSON is not found, try alternative parsing
+                logger.warning(
+                    f"Could not find JSON in the response from {model}, trying alternative parsing"
+                )
+                # Parse lines like "criterion: score"
+                for line in response.split("\n"):
+                    if ":" in line:
+                        parts = line.split(":", 1)
                         if len(parts) == 2:
-                            key = parts[0].strip().strip('"\'{}')
+                            key = parts[0].strip().strip("\"'{}")
                             try:
-                                value = int(parts[1].strip().strip(',}'))
+                                value = int(parts[1].strip().strip(",}"))
                                 if 1 <= value <= 10:
                                     scores[key] = value
                             except ValueError:
                                 pass
         except json.JSONDecodeError as e:
-            logger.error(f"Ошибка парсинга JSON от {model}: {e}")
-            logger.debug(f"Ответ был: {response[:200]}")
-        
-        # Если не удалось получить оценки, ставим средние значения
+            logger.error(f"Error parsing JSON from {model}: {e}")
+            logger.debug(f"The response was: {response[:200]}")
+
+        # If scores could not be obtained, use default values
         if not scores:
-            logger.warning(f"Не удалось получить оценки от {model}, используем значения по умолчанию")
+            logger.warning(f"Could not get scores from {model}, using default values")
             scores = {criterion: 5 for criterion in criteria}
         else:
-            # Нормализуем ключи (убираем лишние символы, приводим к названиям критериев)
+            # Normalize keys (remove extra characters, match to criteria names)
             normalized_scores = {}
             for criterion in criteria:
-                # Ищем похожий ключ в scores
+                # Find a similar key in scores
                 found = False
                 for key, value in scores.items():
-                    if criterion.lower() in key.lower() or key.lower() in criterion.lower():
+                    if (
+                        criterion.lower() in key.lower()
+                        or key.lower() in criterion.lower()
+                    ):
                         normalized_scores[criterion] = max(1, min(10, int(value)))
                         found = True
                         break
                 if not found:
                     normalized_scores[criterion] = 5
-            
+
             scores = normalized_scores
-        
-        # Убеждаемся, что все критерии оценены
+
+        # Ensure all criteria are scored
         for criterion in criteria:
             if criterion not in scores:
                 scores[criterion] = 5
-        
+
         return scores
-    
-    def evaluate_all_answers(self, user_question: str, answers: Dict[str, str], criteria: List[str]) -> Dict[str, Dict[str, Dict[str, int]]]:
-        """Оценивает все ответы всеми моделями."""
-        logger.info("Начало оценки всех ответов всеми моделями...")
+
+    def evaluate_all_answers(
+        self, user_question: str, answers: Dict[str, str], criteria: List[str]
+    ) -> Dict[str, Dict[str, Dict[str, int]]]:
+        """Evaluates all answers with all models."""
+        logger.info("Starting evaluation of all answers by all models...")
         all_evaluations = {}
-        
+
         for answer_model, answer_text in answers.items():
-            logger.info(f"Оценка ответа от {answer_model}...")
+            logger.info(f"Evaluating answer from {answer_model}...")
             model_evaluations = {}
-            
+
             for evaluator_model in self.models:
-                logger.info(f"  Оценка от {evaluator_model}...")
-                scores = self.evaluate_answer(evaluator_model, user_question, answer_text, criteria)
+                logger.info(f"  Evaluation from {evaluator_model}...")
+                scores = self.evaluate_answer(
+                    evaluator_model, user_question, answer_text, criteria
+                )
                 model_evaluations[evaluator_model] = scores
-                
-                # Выводим оценки в лог
+
+                # Log the scores
                 total = sum(scores.values())
-                print(f"\nОценка ответа от {answer_model} моделью {evaluator_model}:", file=sys.stderr)
-                print(f"\nЗапрос:\n{user_question}\n\nОтвет:\n{answer_text}\n", file=sys.stderr)
+                evaluation_log = f"\nEvaluation of answer from {answer_model} by model {evaluator_model}:\n"
+                evaluation_log += (
+                    f"\nQuestion:\n{user_question}\n\nAnswer:\n{answer_text}\n"
+                )
                 for criterion, score in scores.items():
-                    print(f"  {criterion}: {score}/10", file=sys.stderr)
-                print(f"  Итого: {total}/50", file=sys.stderr)
-            
+                    evaluation_log += f"  {criterion}: {score}/10\n"
+                evaluation_log += f"  Total: {total}/50"
+                logger.info(evaluation_log)
+
             all_evaluations[answer_model] = model_evaluations
-        
+
         return all_evaluations
-    
-    def calculate_total_scores(self, evaluations: Dict[str, Dict[str, Dict[str, int]]]) -> Dict[str, int]:
-        """Вычисляет суммарные оценки для каждого ответа."""
+
+    def calculate_total_scores(
+        self, evaluations: Dict[str, Dict[str, Dict[str, int]]]
+    ) -> Dict[str, int]:
+        """Calculates the total scores for each answer."""
         total_scores = {}
-        
+
         for answer_model, model_evaluations in evaluations.items():
             total = 0
             for evaluator_scores in model_evaluations.values():
                 total += sum(evaluator_scores.values())
             total_scores[answer_model] = total
-        
-        logger.info(f"Суммарные оценки: {total_scores}")
+
+        logger.info(f"Total scores: {total_scores}")
         return total_scores
-    
-    def get_final_decision(self, user_question: str, answers: Dict[str, str], total_scores: Dict[str, int]) -> str:
-        """Получает финальное решение от модератора."""
-        # Формируем промпт из шаблона
+
+    def get_final_decision(
+        self, user_question: str, answers: Dict[str, str], total_scores: Dict[str, int]
+    ) -> str:
+        """Gets the final decision from the moderator."""
+        # Render the prompt from the template
         prompt = self.template_moderator.render(
-            user_question=user_question,
-            answers=answers,
-            total_scores=total_scores
+            user_question=user_question, answers=answers, total_scores=total_scores
         )
-        
-        logger.info(f"Запрос финального решения у модератора {self.moderator}...")
-        logger.info(f"Суммарные оценки для модератора: {total_scores}")
-        
+
+        logger.info(f"Requesting final decision from moderator {self.moderator}...")
+        logger.info(f"Total scores for moderator: {total_scores}")
+
         decision = self.client.generate(self.moderator, prompt)
-        
-        # Очищаем ответ от возможных предисловий
+
+        # Clean the response from possible introductions
         decision = decision.strip()
-        for prefix in ["Лучший ответ:", "Выбранный ответ:", "Ответ:", "Решение:"]:
+        for prefix in ["Best answer:", "Chosen answer:", "Answer:", "Decision:"]:
             if decision.startswith(prefix):
-                decision = decision[len(prefix):].strip()
-        
-        # Удаляем дублирование, если текст повторяется дважды
+                decision = decision[len(prefix) :].strip()
+
+        # Remove duplication if the text is repeated
         decision_clean = decision.strip()
         if len(decision_clean) > 50:
-            # Нормализуем весь текст (убираем лишние пробелы и переносы)
-            normalized = ' '.join(decision_clean.split())
-            # Проверяем, не является ли текст дублированным (первая половина = второй)
+            # Normalize the text (remove extra spaces and newlines)
+            normalized = " ".join(decision_clean.split())
+            # Check if the text is duplicated (first half = second half)
             mid_point = len(normalized) // 2
             if mid_point > 25:
                 first_half = normalized[:mid_point].strip()
                 second_half = normalized[mid_point:].strip()
-                # Если вторая половина начинается с первой (с учетом возможных пробелов), удаляем дублирование
+                # If the second half starts with the first (considering possible spaces), remove duplication
                 if first_half and second_half:
-                    # Сравниваем первые 100 символов или всю первую половину
+                    # Compare the first 100 characters or the entire first half
                     compare_len = min(100, len(first_half))
                     if second_half[:compare_len] == first_half[:compare_len]:
-                        # Берем первую половину оригинального текста
-                        decision = decision_clean[:len(decision_clean)//2].strip()
-        
-        logger.info("Финальное решение получено от модератора")
+                        # Take the first half of the original text
+                        decision = decision_clean[: len(decision_clean) // 2].strip()
+
+        logger.info("Final decision received from the moderator")
         return decision
-    
+
     def run(self, user_question: str):
-        """Запускает полный процесс совета моделей."""
+        """Runs the full AI Council process."""
         logger.info("=" * 60)
-        logger.info("Запуск AI Council")
-        logger.info(f"Вопрос пользователя: {user_question}")
+        logger.info("Starting AI Council")
+        logger.info(f"User question: {user_question}")
         logger.info("=" * 60)
-        
-        # Шаг 1: Отправка запроса всем моделям
+
+        # Step 1: Send request to all models
         answers = self.send_to_all_models(user_question)
-        
-        # Шаг 2: Выбор модератора
-        moderator = self.select_moderator()
-        
-        # Шаг 3: Получение критериев оценки
+
+        # Step 2: Select moderator
+        self.select_moderator()
+
+        # Step 3: Get evaluation criteria
         criteria = self.get_evaluation_criteria(user_question)
-        
-        # Шаг 4: Оценка всех ответов всеми моделями
+
+        # Step 4: Evaluate all answers with all models
         evaluations = self.evaluate_all_answers(user_question, answers, criteria)
-        
-        # Шаг 5: Вычисление суммарных оценок
+
+        # Step 5: Calculate total scores
         total_scores = self.calculate_total_scores(evaluations)
-        
-        # Вывод суммарных оценок в лог
-        print(f"\nСуммарные оценки всех ответов:", file=sys.stderr)
-        for model, score in sorted(total_scores.items(), key=lambda x: x[1], reverse=True):
-            print(f"{model}: {score}/250", file=sys.stderr)
-        
-        # Шаг 6: Финальное решение модератора
+
+        # Log total scores
+        scores_log = "\nTotal scores for all answers:\n"
+        for model, score in sorted(
+            total_scores.items(), key=lambda x: x[1], reverse=True
+        ):
+            scores_log += f"{model}: {score}/250\n"
+        logger.info(scores_log)
+
+        # Step 6: Final decision from the moderator
         best_answer = self.get_final_decision(user_question, answers, total_scores)
-        
-        # Определяем модель-победителя по максимальной оценке
+
+        # Determine the winning model by the highest score
         best_model = max(total_scores.items(), key=lambda x: x[1])[0]
-        
-        # Вывод финальной информации
-        print(f"\nМодератор: {self.moderator}", file=sys.stderr)
-        print(f"Лучший ответ: {best_model}", file=sys.stderr)
-        print(f"\nЗапрос:\n{user_question}\n\nОтвет:\n{best_answer}", file=sys.stderr)
-        
-        # Вывод лучшего ответа в stdout
+
+        # Log final information
+        final_log = f"\nModerator: {self.moderator}\n"
+        final_log += f"Best answer from model: {best_model}\n"
+        final_log += f"\nQuestion:\n{user_question}\n\nAnswer:\n{best_answer}"
+        logger.info(final_log)
+
+        # Print the best answer to stdout
         print(best_answer, file=sys.stdout)
-        
+
         logger.info("=" * 60)
-        logger.info("AI Council завершил работу")
+        logger.info("AI Council finished")
         logger.info("=" * 60)
 
 
 def main():
-    """Главная функция."""
+    """Main function."""
     try:
-        # Загрузка конфигурации
+        # Load configuration
         ollama_url = get_ollama_url()
         models = get_models()
         moderator = get_moderator()
-        
+
         logger.info(f"Ollama URL: {ollama_url}")
-        logger.info(f"Модели: {models}")
+        logger.info(f"Models: {models}")
         if moderator:
-            logger.info(f"Модератор задан: {moderator}")
+            logger.info(f"Moderator specified: {moderator}")
         else:
-            logger.info("Модератор будет выбран случайно")
-        
-        # Получение вопроса от пользователя
+            logger.info("Moderator will be selected randomly")
+
+        # Get question from user
         if len(sys.argv) > 1:
-            # Вопрос из аргументов командной строки
+            # Question from command line arguments
             question = " ".join(sys.argv[1:])
         else:
-            # Вопрос из stdin
-            print("Введите ваш вопрос:", file=sys.stderr)
+            # Question from stdin
+            logger.info("Enter your question:")
             question = input()
-        
+
         if not question.strip():
-            logger.error("Вопрос не может быть пустым")
+            logger.error("Question cannot be empty")
             sys.exit(1)
-        
-        # Запуск совета моделей
+
+        # Run the AI Council
         council = AICouncil(models, ollama_url, moderator)
         council.run(question)
-        
+
     except KeyboardInterrupt:
-        logger.info("Прервано пользователем")
+        logger.info("Interrupted by user")
         sys.exit(1)
     except Exception as e:
-        logger.error(f"Критическая ошибка: {e}", exc_info=True)
+        logger.error(f"Critical error: {e}", exc_info=True)
         sys.exit(1)
 
 
